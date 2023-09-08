@@ -30,8 +30,16 @@ pub mod grpc {
 #[derive(Debug)]
 pub enum ControlMessage {
     Checkpoint(CheckpointBarrier),
-    Stop { mode: StopMode },
-    Commit { epoch: u32 },
+    Stop {
+        mode: StopMode,
+    },
+    Commit {
+        epoch: u32,
+    },
+    LoadCompacted {
+        backend_data_to_drop: Vec<grpc::BackendData>,
+        backend_data_to_load: Vec<grpc::BackendData>,
+    },
 }
 
 #[derive(Debug, Clone)]

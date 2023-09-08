@@ -440,6 +440,7 @@ impl<K: Data, T: Data + DeserializeOwned> KinesisSourceFunc<K, T> {
                         Some(ControlMessage::Commit { epoch: _ }) => {
                             unreachable!("sources shouldn't receive commit messages");
                         }
+                        Some(ControlMessage::LoadCompacted { .. }) => info!("Received LoadCompacted message"),
                         None => {
 
                         }

@@ -9,8 +9,9 @@ use arrow::datatypes::Field;
 use arroyo_rpc::grpc::controller_grpc_client::ControllerGrpcClient;
 use arroyo_rpc::grpc::worker_grpc_server::{WorkerGrpc, WorkerGrpcServer};
 use arroyo_rpc::grpc::{
-    CheckpointReq, CheckpointResp, JobFinishedReq, JobFinishedResp, RegisterWorkerReq,
-    StartExecutionReq, StartExecutionResp, StopExecutionReq, StopExecutionResp, WorkerResources,
+    CheckpointReq, CheckpointResp, JobFinishedReq, JobFinishedResp, LoadCompactedDataReq,
+    LoadCompactedDataRes, RegisterWorkerReq, StartExecutionReq, StartExecutionResp,
+    StopExecutionReq, StopExecutionResp, WorkerResources,
 };
 use arroyo_rpc::ControlMessage;
 use arroyo_server_common::start_admin_server;
@@ -424,6 +425,33 @@ impl WorkerGrpc for WorkerServer {
         }
 
         Ok(Response::new(CheckpointResp {}))
+    }
+
+    async fn load_compacted_data(
+        &self,
+        request: Request<LoadCompactedDataReq>,
+    ) -> Result<Response<LoadCompactedDataRes>, Status> {
+        let req = request.into_inner();
+
+        let nodes = {
+            let state = self.state.lock().unwrap();
+            state
+                .as_ref()
+                .unwrap()
+                .running_engine
+                .operator_controls(&req.operator_id)
+        };
+
+        for s in nodes {
+            s.send(ControlMessage::LoadCompacted {
+                backend_data_to_drop: req.backend_data_to_drop.clone(),
+                backend_data_to_load: req.backend_data_to_load.clone(),
+            })
+            .await
+            .unwrap();
+        }
+
+        return Ok(Response::new(LoadCompactedDataRes {}));
     }
 
     async fn stop_execution(

@@ -309,6 +309,15 @@ message CheckpointReq {
 message CheckpointResp {
 }
 
+message LoadCompactedDataReq {
+  string operator_id = 1;
+  repeated BackendData backend_data_to_drop = 2; // this data got compressed...
+  repeated BackendData backend_data_to_load = 3; // ...into this data
+}
+
+message LoadCompactedDataRes {
+}
+
 enum StopMode {
   // The stop message flows through the dataflow like a checkpoint, causing every node to stop at a consistent point
   GRACEFUL = 0;
@@ -332,6 +341,7 @@ message JobFinishedResp {
 service WorkerGrpc {
   rpc StartExecution(StartExecutionReq) returns (StartExecutionResp);
   rpc Checkpoint(CheckpointReq) returns (CheckpointResp);
+  rpc LoadCompactedData(LoadCompactedDataReq) returns (LoadCompactedDataRes);
   rpc StopExecution(StopExecutionReq) returns (StopExecutionResp);
   rpc JobFinished(JobFinishedReq) returns (JobFinishedResp);
 }

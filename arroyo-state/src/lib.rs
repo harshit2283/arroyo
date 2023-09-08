@@ -1,27 +1,32 @@
 use anyhow::Result;
+use arroyo_rpc::grpc::worker_grpc_client::WorkerGrpcClient;
 use arroyo_rpc::grpc::{
     CheckpointMetadata, OperatorCheckpointMetadata, TableDeleteBehavior, TableDescriptor,
     TableType, TableWriteBehavior,
 };
 use arroyo_rpc::ControlResp;
-use arroyo_types::{CheckpointBarrier, Data, Key, TaskInfo};
+use arroyo_types::{CheckpointBarrier, Data, Key, TaskInfo, WorkerId};
 use async_trait::async_trait;
 use bincode::config::Configuration;
+use bincode::{Decode, Encode};
 use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::ops::RangeInclusive;
 use std::time::{Duration, SystemTime};
 use tables::{
     GlobalKeyedState, GlobalKeyedStateCache, KeyTimeMultiMap, KeyTimeMultiMapCache, KeyedState,
     KeyedStateCache, TimeKeyMap, TimeKeyMapCache,
 };
 use tokio::sync::mpsc::Sender;
+use tonic::transport::Channel;
 
 pub mod parquet;
 pub mod tables;
 
 pub const BINCODE_CONFIG: Configuration = bincode::config::standard();
+pub const FULL_KEY_RANGE: RangeInclusive<u64> = 0..=u64::MAX;
 
 pub type StateBackend = parquet::ParquetBackend;
 
@@ -50,6 +55,25 @@ pub fn timestamp_table(
         delete_behavior: delete_behavior as i32,
         write_behavior: write_behavior as i32,
         retention_micros: retention.as_micros() as u64,
+    }
+}
+
+#[derive(Debug, Encode, Decode)]
+#[repr(u32)]
+pub enum DataOperation {
+    Insert,
+    DeleteKey, // delete single key/value pair of Global/TimeKeyMap
+               // DeleteValue,  // delete single value of a KeyTimeMultiMap
+               // DeleteBefore, // delete all values for key before timestamp (only for KeyTimeMultiMap)
+}
+
+impl From<u32> for DataOperation {
+    fn from(op: u32) -> Self {
+        match op {
+            0 => DataOperation::Insert,
+            1 => DataOperation::DeleteKey,
+            _ => panic!("Unknown DataOperation {}", op),
+        }
     }
 }
 
@@ -82,13 +106,15 @@ pub trait BackingStore {
 
     fn name() -> &'static str;
 
+    fn task_info(&self) -> &TaskInfo;
+
     // parepares a checkpoint to be written
     #[allow(unused_variables)]
     async fn initialize_checkpoint(job_id: &str, epoch: u32, operators: &[&str]) -> Result<()> {
         Ok(())
     }
 
-    async fn complete_operator_checkpoint(metadata: OperatorCheckpointMetadata);
+    async fn write_operator_checkpoint_metadata(metadata: OperatorCheckpointMetadata);
 
     async fn complete_checkpoint(metadata: CheckpointMetadata);
 
@@ -96,6 +122,7 @@ pub trait BackingStore {
         metadata: CheckpointMetadata,
         old_min_epoch: u32,
         new_min_epoch: u32,
+        workers: Vec<WorkerGrpcClient<Channel>>,
     ) -> Result<()>;
 
     async fn checkpoint(
@@ -104,9 +131,12 @@ pub trait BackingStore {
         watermark: Option<SystemTime>,
     ) -> u32;
 
-    async fn get_data_triples<K: Key, V: Data>(&self, table: char) -> Vec<(SystemTime, K, V)>;
+    async fn get_data_tuples<K: Key, V: Data>(
+        &self,
+        table: char,
+    ) -> Vec<(SystemTime, K, V, DataOperation)>;
 
-    async fn write_data_triple<K: Key, V: Data>(
+    async fn write_data_tuple<K: Key, V: Data>(
         &mut self,
         table: char,
         table_type: TableType,
@@ -115,10 +145,28 @@ pub trait BackingStore {
         value: &mut V,
     );
 
-    async fn write_key_value<K: Key, V: Data>(&mut self, table: char, key: &mut K, value: &mut V);
+    async fn delete_data_tuple<K: Key>(
+        &mut self,
+        table: char,
+        table_type: TableType,
+        timestamp: SystemTime,
+        key: &mut K,
+    );
 
-    async fn get_global_key_values<K: Key, V: Data>(&self, table: char) -> Vec<(K, V)>;
-    async fn get_key_values<K: Key, V: Data>(&self, table: char) -> Vec<(K, V)>;
+    async fn write_key_value<K: Key, V: Data>(&mut self, table: char, key: &mut K, value: &mut V);
+    async fn delete_key_value<K: Key>(&mut self, table: char, key: &mut K);
+
+    async fn get_key_values<K: Key, V: Data>(
+        &self,
+        table: char,
+        key_range: &RangeInclusive<u64>,
+    ) -> Vec<(K, V)>;
+
+    async fn load_compacted_files(
+        &mut self,
+        backend_data_to_drop: Vec<arroyo_rpc::grpc::BackendData>,
+        backend_data_to_load: Vec<arroyo_rpc::grpc::BackendData>,
+    );
 }
 
 pub struct StateStore<S: BackingStore> {
@@ -163,6 +211,7 @@ impl<S: BackingStore> StateStore<S> {
     ) -> Self {
         let backend =
             S::from_checkpoint(task_info, checkpoint_metadata.clone(), tables.clone(), tx).await;
+
         StateStore {
             backend,
             task_info: task_info.clone(),
@@ -305,6 +354,16 @@ impl<S: BackingStore> StateStore<S> {
 
     pub async fn checkpoint(&mut self, barrier: CheckpointBarrier, watermark: Option<SystemTime>) {
         self.backend.checkpoint(barrier, watermark).await;
+    }
+
+    pub async fn load_compacted_files(
+        &mut self,
+        backend_data_to_drop: Vec<arroyo_rpc::grpc::BackendData>,
+        backend_data_to_load: Vec<arroyo_rpc::grpc::BackendData>,
+    ) {
+        self.backend
+            .load_compacted_files(backend_data_to_drop, backend_data_to_load)
+            .await;
     }
 }
 

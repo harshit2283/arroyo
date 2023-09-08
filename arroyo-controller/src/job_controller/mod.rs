@@ -1,3 +1,4 @@
+use std::collections::hash_map::ValuesMut;
 use std::{
     collections::HashMap,
     time::{Duration, Instant, SystemTime},
@@ -633,14 +634,25 @@ impl JobController {
         self.model.operator_parallelism.get(op).cloned()
     }
 
-    fn start_compaction(&self, new_min: u32) -> JoinHandle<anyhow::Result<u32>> {
+    fn start_compaction(&mut self, new_min: u32) -> JoinHandle<anyhow::Result<u32>> {
         let min_epoch = self.model.min_epoch.max(1);
         let job_id = self.config.id.clone();
         let pool = self.pool.clone();
 
-        info!(message = "Starting compaction", job_id, min_epoch, new_min);
+        info!(
+            message = "\n\n***Starting compaction",
+            job_id, min_epoch, new_min
+        );
         let start = Instant::now();
         let cur_epoch = self.model.epoch;
+
+        // collect the worker's grpc clients
+        let worker_clients: Vec<WorkerGrpcClient<Channel>> = self
+            .model
+            .workers
+            .values()
+            .map(|w| w.connect.clone())
+            .collect();
 
         tokio::spawn(async move {
             let checkpoint = StateBackend::load_checkpoint_metadata(&job_id, cur_epoch)
@@ -654,7 +666,8 @@ impl JobController {
                 .bind(&c, &job_id, &(min_epoch as i32), &(new_min as i32))
                 .await?;
 
-            StateBackend::compact_checkpoint(checkpoint, min_epoch, new_min).await?;
+            StateBackend::compact_checkpoint(checkpoint, min_epoch, new_min, worker_clients)
+                .await?;
 
             controller_queries::mark_checkpoints_compacted()
                 .bind(&c, &job_id, &(new_min as i32))

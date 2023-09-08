@@ -241,6 +241,9 @@ where
                         Some(ControlMessage::Commit{..}) => {
                             return Err(UserError::new("Fluvio source does not support committing", ""));
                         }
+                        Some(ControlMessage::LoadCompacted {backend_data_to_drop, backend_data_to_load}) => {
+                            info!("Received LoadCompacted message");
+                        }
                         None => {
 
                         }

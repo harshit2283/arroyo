@@ -280,6 +280,9 @@ where
                         Some(ControlMessage::Commit { epoch: _ }) => {
                             unreachable!("sources shouldn't receive commit messages");
                         }
+                        Some(ControlMessage::LoadCompacted {backend_data_to_drop, backend_data_to_load}) => {
+                            info!("Received LoadCompacted message");
+                        }
                         None => {
 
                         }

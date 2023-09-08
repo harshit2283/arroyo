@@ -112,6 +112,7 @@ where
             ControlMessage::Commit { epoch: _ } => {
                 unreachable!("sources shouldn't receive commit messages");
             }
+            ControlMessage::LoadCompacted { .. } => info!("Received LoadCompacted message"),
         }
         None
     }
